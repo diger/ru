@@ -52,12 +52,10 @@ def showMessage(heading, message, times = 3000):
 def get_HTML(url, post = None, ref = None, get_url = False):
     request = urllib2.Request(url, post)
     host = urlparse.urlsplit(url).hostname
-
     if ref==None:
-        if host == None:
-            ref=BASE_URL
-        else:
-            ref='http://'+host
+        ref='http://'+host
+
+    print url
 
     request.add_header('User-Agent', 'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 5.1; Trident/4.0; Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1) ; .NET CLR 1.1.4322; .NET CLR 2.0.50727; .NET CLR 3.0.4506.2152; .NET CLR 3.5.30729; .NET4.0C)')
     request.add_header('Host',   host)
@@ -65,19 +63,13 @@ def get_HTML(url, post = None, ref = None, get_url = False):
     request.add_header('Accept-Language', 'ru-RU')
     request.add_header('Referer',             ref)
 
-    xbmc.log("get_HTML " + url + "; ref = " + ref, xbmc.LOGNOTICE)
-
     try:
         f = urllib2.urlopen(request)
-    except IOError as e:
+    except IOError, e:
         if hasattr(e, 'reason'):
-           print ('We failed to reach a server.')
+           print 'We failed to reach a server.'
         elif hasattr(e, 'code'):
-           print ('The server couldn\'t fulfill the request.')
-    except Exception as ex:
-        xbmc.log("Failed to urlopen " + url, xbmc.LOGWARNING)
-        xbmc.log("Exception was: " + str(ex), xbmc.LOGWARNING)
-        return ""
+           print 'The server couldn\'t fulfill the request.'
 
     if get_url == True:
         html = f.geturl()
@@ -337,10 +329,20 @@ def Serial_Info(params):
 
     mi = Get_Info(soup)
     #-- get play list url
-    flashvar = soup.find('object', {'id':'showday'}).find('param', {'name':'flashvars'})['value']
-    for rec in flashvar.split('&'):
-        if rec.split('=',1)[0] == 'pl':
-            pl_url = xppod.Decode(rec.split('=',1)[1])
+
+
+    try:
+	    flashvar = soup.find('object', {'id':'showday'}).find('param', {'name':'flashvars'})['value']
+	    for rec in flashvar.split('&'):
+		if rec.split('=',1)[0] == 'pl':
+		    pl_url = xppod.Decode(rec.split('=',1)[1])
+    except:
+	#!!!!!!
+	    data_link = soup.find('ul', {'class':'player-links'}).find('span')['data-link']
+	    pl_url = xppod.Decode(data_link)
+	    print data_link
+	    print pl_url
+	#!!!!!!
 
     #-- get play list
     season_list = Get_PlayList(pl_url, mode = 's')
@@ -400,7 +402,6 @@ def Serial_Info(params):
             s_num += 1
 
             i = xbmcgui.ListItem(name, path = urllib.unquote(s_url), thumbnailImage=mi.img) # iconImage=mi.img
-            print("year: ", mi.year)
             u = sys.argv[0] + '?mode=PLAY'
             u += '&url=%s'%urllib.quote_plus(s_url)
             u += '&name=%s'%urllib.quote_plus(name)
@@ -409,7 +410,8 @@ def Serial_Info(params):
             u += '&is_season=%s'%urllib.quote_plus(sname)
             i.setInfo(type='video', infoLabels={    'title':       mi.title,
                                                     'cast' :       mi.actors.split(','),
-                            						'year':        int(mi.year[:4]),
+                            						#!!!'year':        int(mi.year),
+                            						'year':        mi.year,
                             						'director':    mi.director,
                             						'plot':        mi.text,
                             						'genre':       mi.genre.split(',')})
@@ -462,11 +464,7 @@ def Get_Info(rec):
         except:
             pass
     #-- img
-    imgsrc = rec.find('div', {'class':'image'}).find('img')['src']
-    if imgsrc.startswith("http:"):
-        i.img = imgsrc
-    else:
-        i.img = BASE_URL + imgsrc
+    i.img = BASE_URL + rec.find('div', {'class':'image'}).find('img')['src']
 
     #-- return movie info
     return i
@@ -516,9 +514,14 @@ def Genre_List(params):
     html = get_HTML(url, post)
     soup = BeautifulSoup(html, fromEncoding="utf-8")
 
-    for g in soup.find('ul', {'class':'subcat'}).findAll('a'):
+    #for g in soup.find('ul', {'class':'cat'}).findAll('a')+soup.find('ul', {'class':'subcat'}).findAll('a'):
+    for g in soup.find('ul', {'class':'subcat clearfix'}).findAll('a'):
+        gtext = g.text.encode('utf-8').replace(' года', '')
         for rec in soup.find('select', {'class':'rating'}).findAll('option'):
-            if g.text == rec.text.replace('&nbsp;', ''):
+            rectext = rec.text.encode('utf-8').replace('&nbsp;', '')
+            rectext = rectext.replace(' сериалы', '')
+            rectext = rectext.replace(' онлайн', '')
+            if gtext == rectext:
                 i = xbmcgui.ListItem(g.text.encode('utf-8'), iconImage=icon, thumbnailImage=icon)
                 u = sys.argv[0] + '?mode=MOVIE'
                 #-- filter parameters

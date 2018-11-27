@@ -1,13 +1,12 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-
-import cookielib
+import base64
+import binascii
+from future.utils import PY3
 import json
 import os
 import re
 import sys
-import urllib
-import urllib2
 
 import xbmc
 import xbmcaddon
@@ -15,51 +14,111 @@ import xbmcgui
 import xbmcplugin
 from bs4 import BeautifulSoup
 
-__settings__ = xbmcaddon.Addon(id='plugin.video.baskino.com')
+from lib import pyaes
+
+if PY3:
+    import urllib.parse as urllib_parse
+    import urllib.request as urllib_request
+    import http.cookiejar as cookielib
+else:
+    import urllib2 as urllib_request
+    import urllib as urllib_parse
+    import cookielib as cookielib
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 6.2; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0"
+
+debug = False
+
+# todo fix temp solution for kodistubs in PY3
+if PY3:
+    __settings__ = xbmcaddon.Addon()
+else:
+    __settings__ = xbmcaddon.Addon(id='plugin.video.baskino.com')
+
 plugin_path = __settings__.getAddonInfo('path').replace(';', '')
 plugin_icon = xbmc.translatePath(os.path.join(plugin_path, 'icon.png'))
 context_path = xbmc.translatePath(os.path.join(plugin_path, 'default.py'))
 
-site_url = 'http://baskino.co'
+site_url = 'http://baskino.me'
+
+antizapret_settings = __settings__.getSetting("antizapret")
+antizapret_enabled = antizapret_settings == "true"
+if antizapret_enabled:
+    try:
+        import antizapret as az
+        print ("AntiZapret imported")
+    except:
+        antizapret_enabled = False
+        xbmc.executebuiltin("InstallAddon(script.module.antizapret)")
 
 
 def alert(title, message):
+    if debug:
+        print("===== Alert =====")
+        print(title)
+        print(message)
     xbmcgui.Dialog().ok(title, message)
 
 
 def notificator(title, message, timeout=500):
+    if debug:
+        print("===== Notificator =====")
+        print(title)
+        print(message)
     xbmc.executebuiltin('XBMC.Notification("%s", "%s", %s, "%s")' % (title, message, timeout, plugin_icon))
+
+
+def play_url(web_url):
+    if debug:
+        print_str = "Playing url: " + web_url
+        print (print_str)
+    item = xbmcgui.ListItem(path=web_url)
+    xbmcplugin.setResolvedUrl(handle=h, succeeded=True, listitem=item)
 
 
 def get_html(web_url):
     cookie_jar = cookielib.CookieJar()
     if mode == 'FAVS':
         cookie_jar = auth(cookie_jar)
-    opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
-    opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 6.2; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0")]
+    if antizapret_enabled:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar),
+                                             az.AntizapretProxyHandler())
+    else:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
+    opener.addheaders = [("User-Agent", USER_AGENT)]
     connection = opener.open(web_url)
     html = connection.read()
     connection.close()
-    return html
+    return html.decode('utf-8')
 
 
 def get_html_with_referer(page_url, referer):
     cookie_jar = cookielib.CookieJar()
     if mode == 'FAVS':
         cookie_jar = auth(cookie_jar)
-    opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
-    opener.addheaders = [("Referer", referer)]
+    if antizapret_enabled:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar),
+                                             az.AntizapretProxyHandler())
+    else:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
+    if referer is not None:
+        opener.addheaders = [("Referer", referer)]
     connection = opener.open(page_url)
     html = connection.read()
     connection.close()
-    return html
+    return html.decode('utf-8')
 
 
 def post_request(page_url, req_data=None, headers=None):
     if headers is None:
         headers = {}
-    opener = urllib2.build_opener(urllib2.HTTPCookieProcessor())
-    conn = urllib2.Request(page_url, urllib.urlencode(req_data), headers)
+    if antizapret_enabled:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(),
+                                             az.AntizapretProxyHandler())
+    else:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor())
+    opener.addheaders = [("User-Agent", USER_AGENT)]
+    conn = urllib_request.Request(page_url, urllib_parse.urlencode(req_data).encode('utf-8'), headers)
     connection = opener.open(conn)
     html = connection.read()
     return html
@@ -67,7 +126,7 @@ def post_request(page_url, req_data=None, headers=None):
 
 def main():
     html = get_html(site_url)
-    soup = BeautifulSoup(html, 'html5lib', from_encoding="utf-8")
+    soup = BeautifulSoup(html, 'html5lib')
     content = soup.find('li', attrs={'class': 'first'})
     content = content.find_all('li')
     add_dir('Поиск', site_url + '/index.php', dir_mode="SEARCH")
@@ -81,8 +140,10 @@ def main():
             add_dir(title, dir_url, dir_mode="FILMS")
 
 
-def add_dir(title, dir_url, icon_img="DefaultVideo.png", dir_mode="", inbookmarks=False):
-    sys_url = sys.argv[0] + '?url=' + urllib.quote_plus(dir_url) + '&mode=' + urllib.quote_plus(str(dir_mode))
+def add_dir(title, dir_url, icon_img="DefaultVideo.png", dir_mode="", referer="", inbookmarks=False):
+    sys_url = sys.argv[0] + '?url=' + urllib_parse.quote_plus(dir_url) + '&mode=' + urllib_parse.quote_plus(
+        str(dir_mode)) + \
+              '&referer=' + urllib_parse.quote_plus(str(referer))
     item = xbmcgui.ListItem(title, iconImage=icon_img, thumbnailImage=icon_img)
     item.setInfo(type='Video', infoLabels={'Title': title})
     dir_id = dir_url.split('-')[0].split('/')[-1]
@@ -95,31 +156,54 @@ def add_dir(title, dir_url, icon_img="DefaultVideo.png", dir_mode="", inbookmark
                                    (context_path, 1, 'mode=add_bookmark&url=' + dir_id)))
     item.addContextMenuItems(context_menu_items)
     xbmcplugin.addDirectoryItem(handle=h, url=sys_url, listitem=item, isFolder=True)
+    if debug:
+        print("===== Add Dir =====")
+        if not isinstance(title, str):
+            print(title.encode('utf-8'))
+            print(sys_url.encode('utf-8'))
+        else:
+            print(title)
+            print(sys_url.encode('utf-8'))
 
 
 def add_link(title, info_labels, link_url, icon_img="DefaultVideo.png"):
     item = xbmcgui.ListItem(title, iconImage=icon_img, thumbnailImage=icon_img)
     item.setInfo(type='Video', infoLabels=info_labels)
+    item.setProperty('IsPlayable', 'true')
     xbmcplugin.addDirectoryItem(handle=h, url=link_url, listitem=item)
+    if debug:
+        print("===== Add Link =====")
+        if not isinstance(title, str):
+            print(title.encode('utf-8'))
+            print(link_url.encode('utf-8'))
+        else:
+            print(title)
+            print(link_url.encode('utf-8'))
 
 
-def search():
-    kbd = xbmc.Keyboard()
-    kbd.setDefault('')
-    kbd.setHeading("Поиск")
-    kbd.doModal()
-    if kbd.isConfirmed():
-        search_str = kbd.getText()
-        search_url = site_url + '/index.php?do=search&subaction=search&actors_only=0&search_start=1&full_search=0' \
-                                '&result_from=1&result_from=1&story=' + search_str
-        get_films_list(search_url)
+def search(search_str):
+    if search_str is None:
+        kbd = xbmc.Keyboard()
+        kbd.setDefault('')
+        kbd.setHeading("Поиск")
+        kbd.doModal()
+        if kbd.isConfirmed():
+            generate_search_list(kbd.getText())
+        else:
+            return False
     else:
-        return False
+        generate_search_list(search_str)
+
+
+def generate_search_list(search_str):
+    search_url = site_url + '/index.php?do=search&subaction=search&actors_only=0&search_start=1&full_search=0' \
+                            '&result_from=1&result_from=1&story=' + urllib_parse.quote(search_str)
+    get_films_list(search_url)
 
 
 def get_films_list(url_main):
     html = get_html(url_main)
-    soup = BeautifulSoup(html, 'html5lib', from_encoding="utf-8")
+    soup = BeautifulSoup(html, 'html5lib')
     content = soup.find_all('div', attrs={'class': 'postcover'})
     for num in content:
         title = num.find('img')['title']
@@ -147,48 +231,106 @@ def get_films_list(url_main):
         return False
 
 
-def parse_player_page(player_url, player_page):
-    manifest_path = re.compile(r'(/manifest.*all)').findall(player_page)[0]
-    compiled_url = "http://" + player_url.split('/')[2] + manifest_path
+class EncryptedData:
+    def __init__(self):
+        pass
+
+    def to_json(self):
+        return json.dumps(self, default=lambda o: o.__dict__, sort_keys=True, separators=(',', ':'))
+
+
+def generate_vs_request(player_url, player_page):
+    mw_pid = re.compile(r"partner_id:\s*(\w*),").findall(player_page)[0]
+    p_domain_id = re.compile(r"domain_id:\s*(\w*),").findall(player_page)[0]
+
+    _mw_adb = False
+
     video_token = re.compile(r"video_token:\s*\S?\'([0-9a-f]*)\S?\'").findall(player_page)[0]
-    mw_key = re.compile(r"mw_key\s?=\s?\'(\w+)\';").findall(player_page)[0]
-    content_type = re.compile(r"content_type:\W*\'(movie)\W?\'").findall(player_page)[0]
-    mw_pid = re.compile(r"mw_pid:\W?(\d*)").findall(player_page)[0]
-    p_domain_id = re.compile(r"p_domain_id:\W?(\d*)").findall(player_page)[0]
-    csrf_token = re.compile(r"csrf-token\W\s?content\s?=\s?\"(\S*)\"").findall(player_page)[0]
-    access_level = re.compile(r"X-Access-Level\S?\':\s?\S?\'([a-f0-9]*)\S?\'").findall(player_page)[0]
-    ad_attr = '0'
+
     cookies = get_cookies(player_page)
-    req_data = {"mw_key": mw_key, "content_type": content_type, "mw_pid": mw_pid, "p_domain_id": p_domain_id,
-                "ad_attr": ad_attr, cookies[0]: cookies[1]}
-    headers = {
-        "X-Access-Level": access_level,
-        "X-CSRF-Token": csrf_token,
-        "X-Requested-With": "XMLHttpRequest"
-    }
-    json_data = post_request(compiled_url, req_data, headers)
+
+    js_path = re.compile(r'script src=\"(.*)\"').findall(player_page)[0]
+    js_page = get_html("http://" + player_url.split('/')[2] + js_path)
+
+    regex_window_value = r'eval\("window"\)\["' + cookies[0] + r'"\]="(\w+)"'
+    window_value = re.compile(regex_window_value).findall(js_page)[0]  # d value
+
+    e_value = re.compile(r'getVideoManifests:function\(\){var e="(\w+)"').findall(js_page)[0]  # key
+
+    r_value = re.compile(r'r="(\w+)",o').findall(js_page)[0]  # iv
+
+    t = EncryptedData()
+    t.a = mw_pid
+    t.b = p_domain_id
+    t.c = _mw_adb
+    t.d = window_value
+    t.e = video_token
+    # t.f = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Safari/537.36"
+    t.f = USER_AGENT
+
+    json_string = t.to_json()
+
+    encrypt_mode = pyaes.AESModeOfOperationCBC(binascii.a2b_hex('7316d0c4' + e_value), binascii.a2b_hex(r_value))
+    encrypter = pyaes.Encrypter(encrypt_mode)
+    encrypted = bytes()
+    encrypted += encrypter.feed(json_string)
+    encrypted += encrypter.feed()
+
+    return base64.standard_b64encode(encrypted)
+
+
+def parse_player_page(player_url, player_page, episode_number=0, referer=''):
+    if episode_number == 0:
+        try:
+            episodes = re.compile(r'episodes:\s(.*),').findall(player_page)[0]
+            if episodes == 'null':
+                pass
+            else:
+                episodes_data = json.loads(episodes)
+                progress = xbmcgui.DialogProgress()
+                progress.create("Загрузка серий")
+                for episode in episodes_data:
+                    percentage = (episode * 100) / (len(episodes_data))
+                    progress.update(percentage, str(episode) + "/" + str(len(episodes_data)))
+                    get_with_referer(player_url, referer, episode)
+                progress.close()
+                return
+        except:
+            pass
+
+    request_data = generate_vs_request(player_url, player_page)
+
+    compiled_url = "http://" + player_url.split('/')[2] + "/vs"
+
+    req_data = {"q": request_data}
+    json_data = post_request(compiled_url, req_data)
     data = json.loads(json_data)
-    html5data = urllib.urlencode({"manifest_m3u8": data["mans"]["manifest_m3u8"],
-                                  "manifest_mp4": data["mans"]["manifest_mp4"], "token": video_token,
-                                  "pid": mw_pid, "debug": 0})
-    html5_player_url = "http://" + player_url.split('/')[2] + "/video/html5" + "?" + html5data
-    html5_page = get_html(html5_player_url)
+    manifest_link_hls = data["m3u8"]
+    manifest_link_mp4 = data["mp4"]
+    links_mp4 = None
+    links_hls = None
+    if manifest_link_hls is not None:
+        manifest_file_hls = get_html(manifest_link_hls)
+        links_hls = re.compile("RESOLUTION=(\d*x\d*)\S*\s*(http\S*m3u8)").findall(manifest_file_hls)
+    if manifest_link_mp4 is not None:
+        manifest_file_mp4 = get_html(manifest_link_mp4)
+        try:
+            links_mp4 = json.loads(manifest_file_mp4)
+        except:
+            links_mp4 = re.compile("RESOLUTION=(\d*x\d*)\S*\s*(http\S*m3u8)").findall(manifest_file_mp4)
 
-    # # this should work for mp4 streams
-    # mp4_manifest_link = re.compile("getJSON\S?\S?\'(http\S*json\S*[0-9a-f])\S?\'").findall(html5_page)[0]
-    # mp4file = get_html(mp4_manifest_link)
-    # links = json.loads(mp4file)
-
-    # this is for m3u8 streams
-    manifest_link = re.compile("hls\s?:\s?\S?\'(http\S*[0-9a-f])\S?\'").findall(html5_page)[0]
-    manifest_file = get_html_with_referer(manifest_link, html5_player_url)
-    links = re.compile("RESOLUTION=(\d*x\d*)\S*\s*(http\S*m3u8)").findall(manifest_file)
-    # noinspection PyTypeChecker
-    return dict(links)
+    if isinstance(links_mp4, list):
+        links_mp4.extend(links_hls)
+    else:
+        if links_mp4 is None:
+            links_mp4 = links_hls
+        else:
+            links_mp4.update(links_hls)
+    return dict(links_mp4)
 
 
 def get_cookies(player_page):
-    cookie = re.compile("\s\swindow\[.*\]\[(.*)\]\W?=\W?([a-z0-9\\\' +]*);").findall(player_page)[0]
+    cookie = re.compile(r"window\[\'(\w*)\'\]\s=\s\'(\w*)\';").findall(player_page)[0]
     cookie_header = cookie[0]
     cookie_header = re.sub('\'|\s|\+', '', cookie_header)
     cookie_data = cookie[1]
@@ -200,7 +342,7 @@ def get_cookies(player_page):
 def get_film_link(dir_url):
     film_url = dir_url
     html = get_html(dir_url)
-    soup = BeautifulSoup(html, 'html5lib', from_encoding="utf_8")
+    soup = BeautifulSoup(html, 'html5lib')
     content = soup.find('div', attrs={'class': 'info'})
     content = content.find_all('tr')
     for num in content:
@@ -218,7 +360,7 @@ def get_film_link(dir_url):
 
     content = soup.find('div', attrs={'id': re.compile('^news')})
     info = content.contents[0]
-    if not isinstance(info, unicode):
+    if not isinstance(info, str):
         info = ''
     # noinspection PyUnboundLocalVariable
     info_label = {'title': title, 'year': year, 'genre': genre, 'plot': info, 'director': director, 'country': country}
@@ -253,16 +395,25 @@ def get_film_link(dir_url):
                         dir_url = get_vk_url(dir_url)
                     else:
                         dir_url = get_flash_url(data[n])
-                    add_link(s.string + ' | ' + ep.string, info_label, dir_url, icon_img=img)
+                    if 'vkinos.com' in dir_url:
+                        dir_url = get_vkinos_url(dir_url)
+                        add_link(s.string + ' | ' + ep.string, info_label, dir_url, icon_img=img)
+                    elif 'staticnlcdn.com' or 'previewer.cc' in dir_url:
+                        add_dir(s.string + ' | ' + ep.string, dir_url, img, referer=film_url, dir_mode="REFERER")
+                    else:
+                        add_dir(s.string + ' | ' + ep.string, dir_url, img, dir_mode="FILM_LINK")
                 k = k + 1
         except:
             pass
     else:
         content = soup.find_all('div', attrs={'class': 'player_code'})
+        content.sort(key=content_comparator, reverse=True)
         for num in content:
             if num.find('iframe') is not None:
                 dir_url = num.find('iframe')['src']
-                print dir_url
+                if debug:
+                    print(num['id'])
+                    print(dir_url)
                 if re.search('(vk.com|vkontakte.ru|vk.me)', dir_url):
                     dir_url = get_vk_url(dir_url)
                     add_link(title + ' [VK]', info_label, dir_url, icon_img=img)
@@ -271,11 +422,11 @@ def get_film_link(dir_url):
                 #    add_link(title + ' [GIDTV]', info_label, dir_url, iconImg=img)
                 elif ('staticdn.nl' or 'moonwalk.cc') in dir_url:
                     '''dir_url = get_moonwalk_url(dir_url)'''
-                    print dir_url
+                    print(dir_url)
                     dir_url = get_real_url(dir_url)
-                    print dir_url
+                    print(dir_url)
                     dir_url = dir_url.replace('iframe', 'index.m3u8')
-                    print dir_url
+                    print(dir_url)
                     add_link(title + ' [HD]', info_label, dir_url, icon_img=img)
                 elif 'vkinos.com' in dir_url:
                     if dir_url[-2:] == '5/':
@@ -285,11 +436,17 @@ def get_film_link(dir_url):
                         dir_url = get_vkinos_url(dir_url)
                         add_link(title + ' [mp4]', info_label, dir_url, icon_img=img)
                 elif 'staticnlcdn.com' in dir_url:
-                    global film_url
                     player_page = get_html_with_referer(dir_url, film_url)
                     mp4_urls = parse_player_page(dir_url, player_page)
-                    for key in mp4_urls.keys():
+                    mp4_keys = list(mp4_urls.keys())
+                    mp4_keys.sort(key=mp4_comparator, reverse=True)
+                    for key in mp4_keys:
                         add_link(title + " [" + key + "]", info_label, mp4_urls[key], icon_img=img)
+                elif 'youtube' in dir_url:
+                    video_id = parse_youtube_link(dir_url)
+                    youtube_url = urllib_parse.quote_plus("plugin://plugin.video.youtube/play/?video_id=" + video_id)
+                    sys_url = sys.argv[0] + '?url=' + youtube_url + '&mode=PLAY'
+                    add_link(u"Анонс " + title, info_label, sys_url, icon_img=img)
             if num.find('div', attrs={'id': re.compile('^videoplayer')}) is not None:
                 dir_url = num.find('script').string
                 dir_url = get_flash_url(dir_url)
@@ -301,14 +458,50 @@ def get_film_link(dir_url):
     xbmcplugin.setContent(h, 'movies')
 
 
+def content_comparator(x):
+    import bs4
+    if isinstance(x, bs4.element.Tag):
+        current_id = x['id']
+        if 'hd' in current_id:
+            return 1
+    return 0
+
+
+def mp4_comparator(x):
+    if x.isdigit():
+        return int(x) + 10000
+    else:
+        return int(x.split('x')[0])
+
+
+def parse_youtube_link(dir_url):
+    return re.findall(r'embed/(\w+)', dir_url)[0]
+
+
+def get_with_referer(dir_url, film_url, episode_number=0):
+    if episode_number == 0:
+        player_page = get_html_with_referer(dir_url, film_url)
+        parse_player_page(dir_url, player_page, referer=film_url)
+    else:
+        player_page = get_html_with_referer(dir_url + "&episode=" + str(episode_number), film_url)
+        mp4_urls = parse_player_page(dir_url, player_page, episode_number=episode_number, referer=film_url)
+        mp4_keys = list(mp4_urls.keys())
+        mp4_keys.sort(key=mp4_comparator, reverse=True)
+        for key in mp4_keys:
+            if isinstance(key, str):
+                add_link("Серия " + str(episode_number) + " [" + key + "]", None, mp4_urls[key])
+            else:
+                add_link("Серия " + str(episode_number) + " [" + key.encode('utf-8') + "]", None, mp4_urls[key])
+
+
 def get_vk_url(vk_url):
     http = get_html(vk_url)
-    soup = BeautifulSoup(http, 'html5lib', from_encoding="utf-8")
+    soup = BeautifulSoup(http, 'html5lib')
     sdata1 = soup.find('div',
                        style="position:absolute; top:50%; text-align:center; right:0pt; left:0pt; font-family:Tahoma; "
                              "font-size:12px; color:#777;")
     if sdata1:
-        print sdata1.string.strip().encode('utf-8')
+        print(sdata1.string.strip().encode('utf-8'))
         return False
     for rec in soup.find_all('param', {'name': 'flashvars'}):
         fv = {}
@@ -343,7 +536,7 @@ def get_vk_url(vk_url):
                 # noinspection PyUnboundLocalVariable
                 vk_url = fv['cache360']
         except:
-            print 'Vk parser failed'
+            print('Vk parser failed')
             return False
     return vk_url
 
@@ -351,15 +544,15 @@ def get_vk_url(vk_url):
 def get_moonwalk_url(link_url):
     token = re.findall('http://moonwalk.cc/video/(.+?)/', link_url)[0]
 
-    req = urllib2.Request('http://moonwalk.cc/sessions/create_session',
-                          data='video_token=' + token + '&video_secret=HIV5')
+    req = urllib_request.Request('http://moonwalk.cc/sessions/create_session',
+                                 data='video_token=' + token + '&video_secret=HIV5')
     # noinspection PyBroadException
     try:
-        response = urllib2.urlopen(req)
+        response = urllib_request.urlopen(req)
         html = response.read()
         response.close()
     except Exception:
-        print 'GET: Error getting page ' + link_url
+        print('GET: Error getting page ' + link_url)
         return None
 
     page = json.loads(html)
@@ -376,17 +569,15 @@ def get_gidtv_url(link_url):
 
 
 def get_flash_url(link_url):
-    n1 = link_url.find('file:') + 6
-    n2 = link_url.find('.mp4', n1) + 4
-    flash_url = link_url[n1:n2]
+    flash_url = re.compile(r'src=\"(http[^\"]*)\"').findall(link_url)[0]
     return flash_url
 
 
 def touch(link_url):
-    req = urllib2.Request(link_url)
+    req = urllib_request.Request(link_url)
     # noinspection PyBroadException
     try:
-        res = urllib2.urlopen(req)
+        res = urllib_request.urlopen(req)
         res.close()
         return True
     except:
@@ -396,7 +587,11 @@ def touch(link_url):
 def add_bookmark(bookmark_id):
     cookie_jar = auth(cookielib.CookieJar())
     fav_url = site_url + '/engine/ajax/favorites.php?fav_id=' + bookmark_id + '&action=plus&skin=Baskino'
-    opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
+    if antizapret_enabled:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar),
+                                             az.AntizapretProxyHandler())
+    else:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
     connection = opener.open(fav_url)
     connection.close()
     notificator('Добавление закладки', 'Закладка добавлена', 3000)
@@ -405,7 +600,11 @@ def add_bookmark(bookmark_id):
 def remove_bookmark(bookmark_id):
     cookie_jar = auth(cookielib.CookieJar())
     fav_url = site_url + '/engine/ajax/favorites.php?fav_id=' + bookmark_id + '&action=minus&skin=Baskino'
-    opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
+    if antizapret_enabled:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar),
+                                             az.AntizapretProxyHandler())
+    else:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
     connection = opener.open(fav_url)
     connection.close()
     notificator('Удаление закладки', 'Закладка удалена', 3000)
@@ -423,7 +622,7 @@ def auth(cookie_jar):
 
     if username == "" or password == "":
         alert('Вы не авторизованы', 'Укажите логин и пароль в настройках приложения')
-        print 'Пользователь не аторизован. Выход.'
+        print('Пользователь не аторизован. Выход.')
         sys.exit()
 
     req_data = {'login_name': username, 'login_password': password, 'login': 'submit'}
@@ -431,16 +630,21 @@ def auth(cookie_jar):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows; U; Windows NT 5.1; en-GB; rv:1.9.0.3) Gecko/2008092417 Firefox/3.0.3",
         "Content-Type": "application/x-www-form-urlencoded",
-        "Host": "baskino.com",
+        "Host": site_url.split('/')[2],
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.8,bg;q=0.6,it;q=0.4,ru;q=0.2,uk;q=0.2",
         "Accept-Encoding": "windows-1251,utf-8;q=0.7,*;q=0.7",
         "Referer": site_url + "/index.php"
     }
-    opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
-    conn = urllib2.Request(req_url, urllib.urlencode(req_data), headers)
+    if antizapret_enabled:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar),
+                                             az.AntizapretProxyHandler())
+    else:
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
+    conn = urllib_request.Request(req_url, urllib_parse.urlencode(req_data).encode('utf-8'), headers)
     connection = opener.open(conn)
     html = connection.read()
+    html = html.decode('utf-8')
     connection.close()
     if 'Ошибка авторизации' in html:
         alert('Проверьте логин и пароль', 'Неверный логин либо пароль')
@@ -450,16 +654,20 @@ def auth(cookie_jar):
 
 
 def get_vkinos_url(vkinos_url):
-    req = urllib2.Request(vkinos_url)
-    res = urllib2.urlopen(req)
+    req = urllib_request.Request(vkinos_url)
+    res = urllib_request.urlopen(req)
     html = res.read()
-    lnk = re.compile('(http://.*.mp4)').findall(html)[0]
+    try:
+        lnk = re.compile('(http://.*.mp4)"').findall(html)[0]
+    except:
+        lnk = "https://github.com/seppius-xbmc-repo/ru/blob/master/plugin.video.baskino.com/samples/vkerror.mp4?" \
+              "raw=true"
     return lnk
 
 
 def get_real_url(req_url):
-    req = urllib2.Request(req_url)
-    res = urllib2.urlopen(req)
+    req = urllib_request.Request(req_url)
+    res = urllib_request.urlopen(req)
     final_url = res.geturl()
     return final_url
 
@@ -485,29 +693,43 @@ params = get_params()
 
 mode = None
 url = None
+referer = None
+keyword = None
 
-# noinspection PyBroadException
 try:
-    mode = urllib.unquote_plus(params['mode'])
+    mode = urllib_parse.unquote_plus(params['mode'])
 except:
     pass
 
-# noinspection PyBroadException
 try:
-    url = urllib.unquote_plus(params['url'])
+    url = urllib_parse.unquote_plus(params['url'])
 except:
     pass
 
-if mode is None:
+try:
+    referer = urllib_parse.unquote_plus(params['referer'])
+except:
+    pass
+
+try:
+    keyword = urllib_parse.unquote_plus(params['keyword'])
+except:
+    pass
+
+if mode is None or mode == 'MAIN':
     main()
 elif mode == 'SEARCH':
-    search()
+    search(keyword)
 elif mode == 'FILMS':
     get_films_list(url)
 elif mode == 'FILM_LINK':
     get_film_link(url)
+elif mode == 'REFERER':
+    get_with_referer(url, referer)
 elif mode == 'FAVS':
     get_films_list(url)
+elif mode == 'PLAY':
+    play_url(url)
 elif mode == 'add_bookmark':
     add_bookmark(url)
 elif mode == 'remove_bookmark':

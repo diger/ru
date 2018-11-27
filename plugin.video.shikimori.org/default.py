@@ -31,6 +31,7 @@ if REMOTE_DBG:
 __settings__ = xbmcaddon.Addon(id='plugin.video.shikimori.org')
 h = int(sys.argv[1])
 kind = __settings__.getSetting('kind') #all|subtitles|fandub|raw
+nickname = __settings__.getSetting('nickname') 
 
 
 plugin_path = __settings__.getAddonInfo('path').replace(';', '')
@@ -53,20 +54,23 @@ def GetHTML(url):
 
 
 def Main(main_url):
+
     if main_url == None :
         main_url = site_url
-    
+    # Notificator('nickname '+nickname, main_url, 3600)
     html = GetHTML(main_url)
     soup = bs(html, "html.parser")
     content = soup.find_all('article', attrs={'class': 'c-anime'})
     
     if main_url == site_url :
+        addDir('Список пользователя '+nickname, site_url, mode="MYLIST")
+
         addDir('Поиск', site_url, mode="SEARCH")
         submenu = soup.find('div', attrs={'class': 'submenu'})
         submenu = submenu.find_all('a')
         
         for el in submenu:
-            addDir(el['title'], url_protocol + el['href'], iconImg=plugin_icon)
+            addDir(el['title'], el['href'], iconImg=plugin_icon)
 
     for num in content:
         block = num.find('', attrs={'class': 'cover'})
@@ -82,12 +86,12 @@ def Main(main_url):
             url = block['data-href']
         else:
             url = block['href']
-        url = url_protocol + url
+#         url = url_protocol + url
         image = num.find('meta', attrs={'itemprop': 'image'})['content']
         addDir(title, url, iconImg=image, mode="FILMS")
     next = soup.find('a', {'class': 'next'})
     if next :
-        addDir('---Следующая страница---', url_protocol + next['href'], iconImg=plugin_icon)
+        addDir('---Следующая страница---', next['href'], iconImg=plugin_icon)
 
 def addDir(title, url, iconImg="DefaultVideo.png", mode="", inbookmarks=False):
     sys_url = sys.argv[0] + '?url=' + urllib.quote_plus(url) + '&mode=' + urllib.quote_plus(str(mode))
@@ -109,7 +113,7 @@ def Search():
     kbd.doModal()
     if kbd.isConfirmed():
         SearchStr = kbd.getText()
-        url = site_url + 'animes/search/' + SearchStr.decode('utf-8')
+        url = site_url + 'animes?search=' + SearchStr.decode('utf-8')
         html = GetHTML(url.encode('utf-8'))
         soup = bs(html, "html.parser")
         content = soup.find_all('article', attrs={'class': 'c-anime'})
@@ -127,7 +131,39 @@ def Search():
     else:
         return False
 
-def GetFilmsList(url_main) :
+def MyList(main_url):
+    if main_url == site_url :
+        listtypes = {'watching':'Смотрю','rewatching':'Пересматриваю','planned':'Запланировано','completed':'Просмотрено','on_hold':'Отложено','dropped':'Брошено'}
+        for listtype, title in listtypes.iteritems():
+            addDir(title, url_protocol + '//shikimori.org/'+nickname+'/list/anime/mylist/'+listtype+'/order-by/name', mode="MYLIST")
+    else :
+        with requests.session() as s:
+            r = s.get(main_url, cookies=dict(list_view='posters'))
+            soup = bs(r.text, "html.parser")
+            content = soup.find_all('article', attrs={'class': 'c-anime'})
+
+            for num in content:
+                block = num.find('', attrs={'class': 'cover'})
+
+                title = num.find('span', attrs={'class': 'title'})
+                if title: title = title.text
+                title_en = num.find('span', attrs={'class': 'name-en'})
+                if title_en: title = title_en.text
+                title_ru = num.find('span', attrs={'class': 'name-ru'})
+                if title_ru: title += " / " + title_ru['data-text']
+            
+                if block.has_attr('data-href'):
+                    url = block['data-href']
+                else:
+                    url = block['href']
+                url = url.replace('//shikimori.org','//play.shikimori.org')
+                image = num.find('meta', attrs={'itemprop': 'image'})['content']
+                addDir(title, url, iconImg=image, mode="FILMS")
+            next = soup.find('a', {'class': 'next'})
+            if next :
+                addDir('---Следующая страница---', url_protocol + next['href'], iconImg=plugin_icon, mode="MYLIST")
+
+def GetFilmsList(url_main):
     html = GetHTML(url_main)
     soup = bs(html, "html.parser")
     content = soup.find('div', attrs={'class': 'c-anime_video_episodes'})
@@ -136,7 +172,7 @@ def GetFilmsList(url_main) :
         lnk = num.find('a')
         title = 'Эпизод ' + lnk.find('span', attrs={'class': 'episode-num'}).text
         # img = num.find('img')['src']
-        url = url_protocol + lnk['href']
+        url = lnk['href']
         addDir(title, url, iconImg="DefaultVideo.png", mode="VOICES")
 
 def GetVKUrl(html):
@@ -169,6 +205,42 @@ def GetSRUrl(html):
     source = soup.find('video').find('source')['src']
     
     return source
+
+def GetSAUrl(html,url):
+
+    # return source
+    headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 6.2; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0",
+            'referer': url,
+    }
+
+    with requests.session() as s:
+        # logging.basicConfig(level=logging.DEBUG) 
+        # import time
+        #_startTime = time.time()
+        #r = s.get(url)
+        s.headers.update(headers)
+        soup = bs(html, "html.parser")
+        #print "Elapsed time: {:.3f} sec".format(time.time() - _startTime)
+        url = soup.find('div', {'class':'player-area'}).find('iframe')['src']
+        url = 'https:' + url
+        # Alert('debug msg',url)
+        r = s.get(url, allow_redirects=True)
+        sjson = bs(r.text, "html.parser")
+        # sjson = bs(r.text, "html.parser").find('div', {'id':'main-video'}).get_text()
+        sjson = bs(r.text, "html.parser").find('video', {'id':'main-video'})['data-sources']
+        data = json.loads(sjson)
+        url = data[0]['urls'][0]
+        ass = bs(r.text, "html.parser").find('video', {'id':'main-video'})['data-subtitles']
+        if ass:
+            i = xbmcgui.ListItem(path=url)
+            ass = 'https://smotret-anime.ru/'+ass
+            i.setSubtitles([ ass ])
+            # Alert('debug msg','set ass '+ass)
+            xbmcplugin.setResolvedUrl(h, True, i)
+            return None
+        else : return url
+    return None
 
 def GetMyviUrl(html, url):
     headers = {
@@ -205,7 +277,7 @@ def GetRutubeUrl(html):
     soup = bs(html, "html.parser")
     try:
         url = soup.find('div', {'class':'b-video_player'}).find('iframe')['src']
-        url = 'http://rutube.ru/api/play/options/' + url.split('http://rutube.ru/play/embed/', 1)[1] + '/?format=xml'
+        url = 'http://rutube.ru/api/play/options/' + url.split('//rutube.ru/play/embed/', 1)[1] + '/?format=xml'
         http = GetHTML(url)
         soup = bs(http, "html.parser")
         url = soup.find('video_balancer').find('m3u8').text
@@ -235,17 +307,25 @@ def PlayUrl(url):
         url = GetSibnetUrl(html)
     elif 'sovetromantica.com' in player:
         url = GetSRUrl(html)
+    elif 'smotret-anime.ru' in player:
+        url = GetSAUrl(html, url)
     else :
         Notificator('ERROR', 'Not supported player', 3600)
         return None
-    i = xbmcgui.ListItem(path=url)
-    xbmcplugin.setResolvedUrl(h, True, i)
+    if url :
+        i = xbmcgui.ListItem(path=url)
+        xbmcplugin.setResolvedUrl(h, True, i)
+
 
 def GetVoicesList(url):
     http = GetHTML(url)
     soup = bs(http, "html.parser")
     
     title = soup.find('meta', attrs={'itemprop': 'name'})['content']
+    num = soup.find('div', attrs={'class': 'b-video_player'})
+    if num:
+        if num.has_attr('data-episode'):
+            title += ' ' + num['data-episode']
     content = soup.find('div', attrs={'class': 'video-variant-group','data-kind': kind})
     if not content:
         content = soup.find('div', attrs={'class': 'video-variant-group'})
@@ -254,7 +334,7 @@ def GetVoicesList(url):
         lnk = voice.find('a')
         player = lnk.find('span', attrs={'class': 'video-hosting'}).text
 
-        if player not in ['myvi.tv','myvi.ru','rutube.ru','sibnet.ru','sovetromantica.com','vk.com']:
+        if player not in ['myvi.tv','myvi.ru','rutube.ru','sibnet.ru','sovetromantica.com','vk.com','smotret-anime.ru']:
             continue
 
         variant = lnk.find('span', attrs={'class': 'video-kind'})
@@ -272,7 +352,7 @@ def GetVoicesList(url):
             item_title += ' ' + author.text
 
         # img = num.find('img')['src']
-        url = url_protocol + lnk['href']
+        url = lnk['href']
         # print player.encode('utf-8')
 
         addLink(item_title, url, iconImg="DefaultVideo.png")
@@ -308,6 +388,7 @@ try: url = urllib.unquote_plus(params['url'])
 except: pass
 
 if mode == None: Main(url)
+elif mode == 'MYLIST': MyList(url)
 elif mode == 'SEARCH': Search()
 elif mode == 'FILMS': GetFilmsList(url)
 elif mode == 'PLAY_URL': PlayUrl(url)
