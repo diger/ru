@@ -19,6 +19,24 @@
   </extension>
 </addon>
 
+<addon id="plugin.audio.akado.radio"
+       name="akado.radio"
+       version="1.0.5"
+       provider-name="HD-Lab Team">
+  <requires>
+    <import addon="xbmc.python" version="2.1.0"/>
+  </requires>
+  <extension point="xbmc.python.pluginsource"
+            library="default.py">
+        <provides>audio</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <platform>all</platform>
+    <summary>АКАДО.Радио</summary>
+    <description>АКАДО.Радио</description>
+  </extension>
+</addon>
+
 <addon id="plugin.audio.asbook.ru"
        name="[COLOR FF00FF00]Аудиокниги ([/COLOR][COLOR FFFFF000]asbook.ru[/COLOR][COLOR FF00FF00])[/COLOR]"
        version="1.0.11"
